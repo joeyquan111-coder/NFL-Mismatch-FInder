@@ -1,7 +1,7 @@
 """
 data_loader.py
 ---------------
-Pulls free, public NFL data from nflverse (via the nfl_data_py package) and
+Pulls free, public NFL data from nflverse (via the nflreadpy package) and
 shapes it into three tables used by the rest of the app:
 
 1. weekly_player_stats   -> one row per player per week (offense box score)
@@ -9,26 +9,34 @@ shapes it into three tables used by the rest of the app:
                              showing what that team's DEFENSE allowed
 3. upcoming_matchups     -> this week's schedule, so we know who plays whom
 
-nfl_data_py wraps the nflverse-data GitHub releases, which are updated
+nflreadpy wraps the nflverse-data GitHub releases, which are updated
 weekly during the season and are free to use. No API key required.
 
+NOTE: This was switched from the older `nfl_data_py` package, which was
+deprecated and archived in September 2025 and stopped reliably serving
+current-season data (hence 404 errors on recent seasons). `nflreadpy` is
+the actively maintained replacement, but it returns Polars DataFrames
+(not pandas) and uses slightly different column names in places, so this
+file converts to pandas immediately and normalizes column names so the
+rest of the app (mismatch_engine.py, app.py) doesn't need to change at all.
+
 NOTE: This machine building the code has no internet access, so these
-functions are written against nfl_data_py's documented/known schema but
+functions are written against nflreadpy's documented/known schema but
 have NOT been executed against live data. When you run this on your own
 machine (with internet), if a column name has changed upstream, the
 functions will raise a clear error telling you what was expected -- just
 run `df.columns.tolist()` on the offending frame and adjust the constant
-lists at the top of this file.
+lists or the _first_present() lookups below to match.
 """
 
 from __future__ import annotations
 import pandas as pd
 import numpy as np
-import nfl_data_py as nfl
+import nflreadpy as nfl
 
 # ---------------------------------------------------------------------------
-# Columns we expect from nfl_data_py.import_weekly_data(). If nflverse
-# renames something, tweak this list -- everything downstream reads from it.
+# Columns we expect from nflreadpy.load_player_stats(). If nflverse renames
+# something, tweak these lists -- everything downstream reads from them.
 # ---------------------------------------------------------------------------
 ID_COLS = [
     "player_id", "player_display_name", "position", "position_group",
@@ -46,6 +54,16 @@ OFFENSE_STAT_COLS = [
 DEFENSE_TRACKED_POSITIONS = ["QB", "RB", "WR", "TE"]
 
 
+def _first_present(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    """Returns the first of `candidates` that's actually a column in df.
+    Used because nflreadpy has renamed a field or two vs. the old package
+    (e.g. team column has appeared as either 'team' or 'recent_team')."""
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
 def _require_columns(df: pd.DataFrame, cols: list[str], source: str) -> None:
     missing = [c for c in cols if c not in df.columns]
     if missing:
@@ -59,10 +77,23 @@ def _require_columns(df: pd.DataFrame, cols: list[str], source: str) -> None:
 
 def load_weekly_player_stats(season: int) -> pd.DataFrame:
     """One row per player per week: the offensive box score."""
-    df = nfl.import_weekly_data([season])
-    df = df[df["season_type"] == "REG"].copy()
+    df = nfl.load_player_stats([season]).to_pandas()
+
+    # Normalize the "current team" column name across nflreadpy versions.
+    team_col = _first_present(df, ["recent_team", "team"])
+    if team_col is None:
+        raise ValueError(
+            "Couldn't find a team column in load_player_stats() output. "
+            f"Available columns were: {sorted(df.columns.tolist())}"
+        )
+    if team_col != "recent_team":
+        df = df.rename(columns={team_col: "recent_team"})
+
+    if "season_type" in df.columns:
+        df = df[df["season_type"] == "REG"].copy()
+
     keep = [c for c in ID_COLS + OFFENSE_STAT_COLS if c in df.columns]
-    _require_columns(df, ["player_id", "position", "recent_team", "week"], "import_weekly_data")
+    _require_columns(df, ["player_id", "position", "recent_team", "week"], "load_player_stats")
     df = df[keep].copy()
     df = df[df["position"].isin(DEFENSE_TRACKED_POSITIONS)]
     return df
@@ -95,7 +126,7 @@ def load_team_defense_allowed(weekly: pd.DataFrame) -> pd.DataFrame:
 
 def load_schedules(season: int) -> pd.DataFrame:
     """Full-season schedule, used to find each team's upcoming opponent."""
-    sched = nfl.import_schedules([season])
+    sched = nfl.load_schedules([season]).to_pandas()
     keep = ["game_id", "season", "week", "gameday", "home_team", "away_team"]
     keep = [c for c in keep if c in sched.columns]
     return sched[keep].copy()
