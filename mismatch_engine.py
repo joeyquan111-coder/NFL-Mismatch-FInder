@@ -35,9 +35,23 @@ STAT_POSITION_MAP = {
     "receiving_yards": "WR",
     "receiving_tds": "WR",
     "receptions": "WR",
-    "target_share": "WR",  # share of team's targets -- a usage/opportunity signal,
-                           # steadier than raw yards since it ignores game-to-game
-                           # touchdown/yardage variance. Values are fractions (0-1).
+}
+
+# ---------------------------------------------------------------------------
+# Opportunity context: NOT a scored stat, doesn't affect mismatch_score.
+# Shown alongside every row as a plain-English usage signal so you can see
+# whether a player's volume backs up the mismatch, or if their form number
+# is being carried by a couple of big plays. Which raw stat is used, and how
+# it's formatted, depends on the player's position:
+#   WR/TE -> target share (their share of the team's targets)
+#   RB    -> rush attempts per game (target share isn't meaningful for a runner)
+#   QB    -> pass attempts per game
+# ---------------------------------------------------------------------------
+OPPORTUNITY_CONTEXT = {
+    "QB": ("attempts", lambda v: f"{v:.1f} pass att/gm"),
+    "RB": ("carries", lambda v: f"{v:.1f} rush att/gm"),
+    "WR": ("target_share", lambda v: f"{v:.0%} target share"),
+    "TE": ("target_share", lambda v: f"{v:.0%} target share"),
 }
 
 RECENCY_HALF_LIFE_WEEKS = 4  # more recent games weigh more
@@ -92,6 +106,35 @@ def defense_weakness_scores(defense_allowed: pd.DataFrame, stat: str, current_we
     return grouped
 
 
+def compute_opportunity_context(weekly: pd.DataFrame, current_week: int) -> pd.DataFrame:
+    """
+    Recency-weighted per-game usage metric for each player, using whichever
+    raw stat is meaningful for their position (see OPPORTUNITY_CONTEXT).
+    This is purely informational context -- it is never z-scored and never
+    added into mismatch_score.
+    """
+    frames = []
+    for position, (stat, formatter) in OPPORTUNITY_CONTEXT.items():
+        df = weekly[(weekly["position"] == position) & (weekly["week"] < current_week)].copy()
+        if df.empty or stat not in df.columns:
+            continue
+
+        df["_w"] = _recency_weights(df["week"], current_week)
+        df["_weighted_stat"] = df[stat] * df["_w"]
+
+        grouped = df.groupby(["player_id", "recent_team"]).apply(
+            lambda g: g["_weighted_stat"].sum() / g["_w"].sum()
+        ).reset_index(name="_raw_value")
+        grouped["opportunity"] = grouped["_raw_value"].apply(
+            lambda v: formatter(v) if pd.notna(v) else None
+        )
+        frames.append(grouped[["player_id", "recent_team", "opportunity"]])
+
+    if not frames:
+        return pd.DataFrame(columns=["player_id", "recent_team", "opportunity"])
+    return pd.concat(frames, ignore_index=True)
+
+
 def build_mismatch_table(
     weekly: pd.DataFrame,
     defense_allowed: pd.DataFrame,
@@ -120,7 +163,7 @@ def build_mismatch_table(
     merged = merged.sort_values("mismatch_score", ascending=False).reset_index(drop=True)
 
     display_cols = [
-        "player_display_name", "position", "recent_team", "opponent", "is_home",
+        "player_id", "player_display_name", "position", "recent_team", "opponent", "is_home",
         f"{stat}_form", f"{stat}_form_z",
         f"{stat}_allowed", f"{stat}_allowed_z",
         "mismatch_score", "stat",
@@ -135,7 +178,8 @@ def build_all_mismatches(
     current_week: int,
 ) -> pd.DataFrame:
     """Runs build_mismatch_table for every tracked stat and stacks the results
-    into one long table with a common column set for easy filtering/sorting."""
+    into one long table with a common column set for easy filtering/sorting.
+    Also attaches the (unscored) opportunity context column."""
     frames = []
     for stat in STAT_POSITION_MAP:
         t = build_mismatch_table(weekly, defense_allowed, matchups, stat, current_week)
@@ -147,4 +191,17 @@ def build_all_mismatches(
         })
         frames.append(t)
     out = pd.concat(frames, ignore_index=True)
+
+    opportunity = compute_opportunity_context(weekly, current_week)
+    out = out.merge(opportunity, on=["player_id", "recent_team"], how="left")
+
+    # Put opportunity right after is_home, drop the now-unneeded id column.
+    ordered_cols = [
+        "player_display_name", "position", "recent_team", "opponent", "is_home",
+        "opportunity",
+        "player_form", "player_form_z", "defense_allowed", "defense_allowed_z",
+        "mismatch_score", "stat",
+    ]
+    out = out[ordered_cols]
+
     return out.sort_values("mismatch_score", ascending=False).reset_index(drop=True)
