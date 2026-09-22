@@ -12,10 +12,30 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-from data_loader import load_all
+from data_loader import load_all, infer_current_season, infer_current_week
 from mismatch_engine import build_all_mismatches, STAT_POSITION_MAP
 
 st.set_page_config(page_title="NFL Matchup Mismatch Finder", layout="wide")
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def get_default_season_week():
+    """Auto-detects the current NFL season and week from real schedule
+    dates, so the app opens pointed at 'right now' instead of a stale
+    hardcoded default. Cached for 6 hours since this doesn't need to be
+    recomputed on every rerun."""
+    season = infer_current_season()
+    try:
+        week = infer_current_week(season)
+    except Exception:
+        week = 4
+    # Week 1 has no prior week of data to build form/defense stats from,
+    # so never default below week 2.
+    week = max(week, 2)
+    return season, week
+
+
+DEFAULT_SEASON, DEFAULT_WEEK = get_default_season_week()
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -41,8 +61,14 @@ st.caption(
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.header("Settings")
-    season = st.number_input("Season", min_value=2015, max_value=2100, value=2025, step=1)
-    week = st.number_input("Upcoming week to analyze", min_value=2, max_value=22, value=4, step=1)
+    season = st.number_input(
+        "Season", min_value=2015, max_value=2100, value=DEFAULT_SEASON, step=1,
+        help="Auto-detected from today's date. Change it to look at a different season."
+    )
+    week = st.number_input(
+        "Upcoming week to analyze", min_value=2, max_value=22, value=DEFAULT_WEEK, step=1,
+        help="Auto-detected as the current/next NFL week based on real game dates."
+    )
     position_filter = st.multiselect(
         "Position filter", options=list(set(STAT_POSITION_MAP.values())),
         default=list(set(STAT_POSITION_MAP.values()))
