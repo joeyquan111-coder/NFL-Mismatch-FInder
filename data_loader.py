@@ -136,33 +136,6 @@ def load_team_defense_allowed(weekly: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
         .rename(columns={"opponent_team": "defense_team"})
     )
-
-    # --- target share allowed -----------------------------------------
-    # For each defense-week-position row, what fraction of the OPPOSING
-    # OFFENSE's total pass attempts that game went to this position group.
-    # We derive the offense's total attempts from the QB rows already in
-    # `weekly` (summed, in case of a QB change mid-game), then match each
-    # defense-week to the one offense that played them that week.
-    if "targets" in allowed.columns and "attempts" in weekly.columns:
-        qb_attempts = (
-            weekly[weekly["position"] == "QB"]
-            .groupby(["recent_team", "opponent_team", "week"])["attempts"]
-            .sum()
-            .reset_index()
-            .rename(columns={
-                "recent_team": "offense_team",
-                "opponent_team": "defense_team",
-                "attempts": "opponent_pass_attempts",
-            })
-        )
-        allowed = allowed.merge(qb_attempts, on=["defense_team", "week"], how="left")
-        allowed["target_share"] = np.where(
-            allowed["opponent_pass_attempts"] > 0,
-            allowed["targets"] / allowed["opponent_pass_attempts"],
-            np.nan,
-        )
-        allowed = allowed.drop(columns=["offense_team", "opponent_pass_attempts"])
-
     return allowed
 
 
