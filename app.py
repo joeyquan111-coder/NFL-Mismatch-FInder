@@ -17,6 +17,18 @@ from mismatch_engine import build_all_mismatches, STAT_POSITION_MAP
 
 st.set_page_config(page_title="NFL Matchup Mismatch Finder", layout="wide")
 
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_all_cached(season: int, week: int):
+    """Cached wrapper so repeated visits/filters don't re-pull data from
+    nflverse every time -- important on free hosting where each fetch
+    costs real time and bandwidth. Cache expires after 1 hour."""
+    data = load_all(season, week)
+    mismatches = build_all_mismatches(
+        data["weekly"], data["defense_allowed"], data["matchups"], week
+    )
+    return mismatches
+
 st.title("🏈 NFL Offense vs. Defense Mismatch Finder")
 st.caption(
     "Cross-references player form against opponent defensive weaknesses. "
@@ -48,10 +60,7 @@ if "data" not in st.session_state:
 if load_btn or st.session_state["data"] is None:
     with st.spinner("Pulling live data from nflverse (requires internet)..."):
         try:
-            data = load_all(season, week)
-            mismatches = build_all_mismatches(
-                data["weekly"], data["defense_allowed"], data["matchups"], week
-            )
+            mismatches = load_all_cached(season, week)
             st.session_state["data"] = mismatches
             st.success(f"Loaded {len(mismatches)} player/stat rows for week {week}, {season}.")
         except Exception as e:
@@ -74,8 +83,8 @@ if mismatches is not None and not mismatches.empty:
     st.subheader(f"Top Mismatches — Week {week}, {season}")
     st.dataframe(
         filtered.style.format({
-            "player_form": "{:.1f}", "player_form_z": "{:.2f}",
-            "defense_allowed": "{:.1f}", "defense_allowed_z": "{:.2f}",
+            "player_form": "{:.2f}", "player_form_z": "{:.2f}",
+            "defense_allowed": "{:.2f}", "defense_allowed_z": "{:.2f}",
             "mismatch_score": "{:.2f}",
         }),
         use_container_width=True,
@@ -117,6 +126,11 @@ if mismatches is not None and not mismatches.empty:
 
             A high score means a player who's been performing well is about to
             face a defense that has struggled to contain that exact stat.
+
+            **target_share** is a fraction (0–1): the share of the team's total
+            targets a player has been getting, and the share of an opponent's
+            pass attempts a defense has been conceding to that position. 0.28
+            means 28% of targets/attempts.
             """
         )
 else:
