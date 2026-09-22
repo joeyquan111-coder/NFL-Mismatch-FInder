@@ -56,6 +56,56 @@ OPPORTUNITY_CONTEXT = {
 
 RECENCY_HALF_LIFE_WEEKS = 4  # more recent games weigh more
 
+# ---------------------------------------------------------------------------
+# Rate-based defense weakness components. A defense's raw yards/TDs-allowed
+# total conflates two different things: how many plays/opportunities it
+# faced (pace/volume, driven by the offenses it happened to play) and how
+# well it actually defended each one (efficiency). Every scored stat below
+# gets a composite weakness score built from rate components instead of a
+# single raw total, so a defense that "allows a lot" only because it faced
+# high-volume offenses isn't mistaken for one that's actually bad at
+# defending the position.
+#
+# Each component is either:
+#   ("ratio", numerator_col, denominator_col) -- a true rate, e.g. yards per
+#       attempt or TDs per opportunity, computed as (recency-weighted total
+#       numerator) / (recency-weighted total denominator) across recent
+#       games -- NOT an average of weekly ratios, which would let
+#       low-attempt weeks skew things.
+#   ("avg", col, None)                        -- a plain recency-weighted
+#       per-game average, used for volume context (e.g. completions/game,
+#       targets/game) alongside the efficiency rates.
+# ---------------------------------------------------------------------------
+RATE_COMPONENTS = {
+    "passing_yards": [
+        ("ratio", "passing_yards", "attempts"),   # yards per attempt allowed
+        ("ratio", "completions", "attempts"),     # completion % allowed
+        ("avg", "completions", None),             # completions per game allowed
+    ],
+    "passing_tds": [
+        ("ratio", "passing_tds", "attempts"),     # TD rate per pass attempt allowed
+    ],
+    "rushing_yards": [
+        ("ratio", "rushing_yards", "carries"),    # yards per carry allowed
+        ("avg", "carries", None),                 # rush attempts per game allowed
+    ],
+    "rushing_tds": [
+        ("ratio", "rushing_tds", "carries"),      # TD rate per carry allowed
+    ],
+    "receiving_yards": [
+        ("ratio", "receiving_yards", "targets"),  # yards per target allowed
+        ("ratio", "receptions", "targets"),       # catch rate allowed
+        ("avg", "targets", None),                 # targets per game allowed
+    ],
+    "receiving_tds": [
+        ("ratio", "receiving_tds", "targets"),    # TD rate per target allowed
+    ],
+    "receptions": [
+        ("ratio", "receptions", "targets"),       # catch rate allowed
+        ("avg", "targets", None),                 # targets per game allowed
+    ],
+}
+
 
 def _recency_weights(weeks: pd.Series, current_week: int) -> np.ndarray:
     age = (current_week - weeks).clip(lower=0)
@@ -104,6 +154,51 @@ def defense_weakness_scores(defense_allowed: pd.DataFrame, stat: str, current_we
     std = std if std > 0 else 1.0
     grouped[f"{stat}_allowed_z"] = (grouped[f"{stat}_allowed"] - mean) / std
     return grouped
+
+
+def defense_weakness_rate_z(defense_allowed: pd.DataFrame, stat: str, current_week: int) -> pd.DataFrame | None:
+    """
+    Pace/volume-adjusted alternative to the raw-total z-score, for stats
+    listed in RATE_COMPONENTS. Builds each component (a true rate for
+    "ratio" components, a recency-weighted per-game average for "avg"
+    components), z-scores each across the league, then averages those
+    z-scores into one composite. Returns None if `stat` isn't in
+    RATE_COMPONENTS (caller should fall back to the raw-total z-score).
+    """
+    components = RATE_COMPONENTS.get(stat)
+    if not components:
+        return None
+
+    position = STAT_POSITION_MAP[stat]
+    df = defense_allowed[(defense_allowed["position"] == position) & (defense_allowed["week"] < current_week)].copy()
+    if df.empty:
+        return None
+    df["_w"] = _recency_weights(df["week"], current_week)
+
+    z_series_list = []
+    for kind, num_col, den_col in components:
+        if num_col not in df.columns or (den_col and den_col not in df.columns):
+            continue
+        tmp = df.copy()
+        tmp["_wn"] = tmp[num_col] * tmp["_w"]
+        if kind == "ratio":
+            tmp["_wd"] = tmp[den_col] * tmp["_w"]
+            grouped = tmp.groupby("defense_team").apply(
+                lambda g: g["_wn"].sum() / g["_wd"].sum() if g["_wd"].sum() > 0 else np.nan
+            )
+        else:  # "avg"
+            grouped = tmp.groupby("defense_team").apply(
+                lambda g: g["_wn"].sum() / g["_w"].sum()
+            )
+        mean_, std_ = grouped.mean(), grouped.std(ddof=0)
+        std_ = std_ if std_ > 0 else 1.0
+        z_series_list.append((grouped - mean_) / std_)
+
+    if not z_series_list:
+        return None
+
+    composite = pd.concat(z_series_list, axis=1).mean(axis=1)
+    return composite.reset_index(name=f"{stat}_allowed_z_composite")
 
 
 def compute_opportunity_context(weekly: pd.DataFrame, current_week: int) -> pd.DataFrame:
@@ -157,6 +252,19 @@ def build_mismatch_table(
     merged = merged.merge(
         weakness, left_on="opponent", right_on="defense_team", how="inner"
     )
+
+    # For stats with rate-based components defined (see RATE_COMPONENTS),
+    # replace the raw-total z-score with the pace/volume-adjusted composite
+    # before scoring. The raw f"{stat}_allowed" total is left untouched so
+    # it still displays as familiar "yards allowed per game" context.
+    composite = defense_weakness_rate_z(defense_allowed, stat, current_week)
+    if composite is not None:
+        composite = composite.rename(columns={"defense_team": "opponent"})
+        merged = merged.merge(composite, on="opponent", how="left")
+        merged[f"{stat}_allowed_z"] = merged[f"{stat}_allowed_z_composite"].combine_first(
+            merged[f"{stat}_allowed_z"]
+        )
+        merged = merged.drop(columns=[f"{stat}_allowed_z_composite"])
 
     merged["mismatch_score"] = merged[f"{stat}_form_z"] + merged[f"{stat}_allowed_z"]
     merged["stat"] = stat
