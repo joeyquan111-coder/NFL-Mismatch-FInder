@@ -33,6 +33,7 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 import nflreadpy as nfl
+from datetime import date
 
 # ---------------------------------------------------------------------------
 # Columns we expect from nflreadpy.load_player_stats(). If nflverse renames
@@ -170,3 +171,49 @@ def load_all(season: int, upcoming_week: int) -> dict[str, pd.DataFrame]:
         "defense_allowed": defense_allowed,
         "matchups": matchups,
     }
+
+
+def infer_current_season(today: date | None = None) -> int:
+    """
+    NFL seasons are labeled by the calendar year they START in (games from
+    September through the following February's Super Bowl all belong to
+    that same season). So:
+      - Sep-Dec  -> this calendar year's season
+      - Jan-Feb  -> still last calendar year's season (playoffs/Super Bowl)
+      - Mar-Aug  -> offseason, no current season yet; default to the most
+                    recently COMPLETED season so there's real data to show
+    """
+    today = today or date.today()
+    if today.month in (1, 2):
+        return today.year - 1
+    if today.month >= 9:
+        return today.year
+    return today.year - 1  # March - August offseason
+
+
+def infer_current_week(season: int, today: date | None = None) -> int:
+    """
+    Finds the current/upcoming NFL week by checking real game dates from
+    that season's schedule, rather than guessing a fixed formula -- this
+    naturally handles bye weeks and any schedule quirks correctly.
+
+    Returns the week number of the earliest game that hasn't been played
+    yet (i.e. the week that's either in progress or coming up next). If
+    every game in the season has already been played, returns the final
+    week. Falls back to week 2 (the earliest week with any prior-week data
+    to build form/defense stats from) if the schedule can't be loaded.
+    """
+    today = today or date.today()
+    try:
+        sched = load_schedules(season)
+        sched = sched.dropna(subset=["gameday"]).copy()
+        sched["gameday"] = pd.to_datetime(sched["gameday"]).dt.date
+
+        upcoming = sched[sched["gameday"] >= today]
+        if not upcoming.empty:
+            return int(upcoming["week"].min())
+        if not sched.empty:
+            return int(sched["week"].max())
+    except Exception:
+        pass
+    return 2
