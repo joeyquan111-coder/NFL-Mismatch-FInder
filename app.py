@@ -127,10 +127,11 @@ if mismatches is not None and not mismatches.empty:
             A high score means a player who's been performing well is about to
             face a defense that has struggled to contain that exact stat.
 
-            **target_share** is a fraction (0–1): the share of the team's total
-            targets a player has been getting, and the share of an opponent's
-            pass attempts a defense has been conceding to that position. 0.28
-            means 28% of targets/attempts.
+            **opportunity** is context, not part of the score: it shows each
+            player's recent usage/volume, using whichever measure fits their
+            position — target share for WR/TE, rush attempts per game for RB,
+            pass attempts per game for QB. It's there to help you judge whether
+            a mismatch is backed by real opportunity or just a couple of big plays.
             """
         )
 else:
