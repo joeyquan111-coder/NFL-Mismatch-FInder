@@ -1,4 +1,4 @@
-nfl_data_py>=0.3.1
+nflreadpy>=0.1.0
 pandas>=2.0.0
 numpy>=1.24.0
 streamlit>=1.30.0
