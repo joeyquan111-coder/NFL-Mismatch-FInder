@@ -35,6 +35,9 @@ STAT_POSITION_MAP = {
     "receiving_yards": "WR",
     "receiving_tds": "WR",
     "receptions": "WR",
+    "target_share": "WR",  # share of team's targets -- a usage/opportunity signal,
+                           # steadier than raw yards since it ignores game-to-game
+                           # touchdown/yardage variance. Values are fractions (0-1).
 }
 
 RECENCY_HALF_LIFE_WEEKS = 4  # more recent games weigh more
