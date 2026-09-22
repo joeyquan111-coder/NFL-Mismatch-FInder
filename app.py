@@ -119,9 +119,10 @@ if mismatches is not None and not mismatches.empty:
 
             - **player_form_z**: the player's recency-weighted per-game average,
               z-scored against all players at that position (recent games count more).
-            - **defense_allowed_z**: the upcoming opponent's recency-weighted
-              per-game average *allowed* in that stat to that position,
-              z-scored against the rest of the league. Higher = weaker defense.
+            - **defense_allowed_z**: how weak the upcoming opponent's defense is
+              against that stat, z-scored against the rest of the league. Higher =
+              weaker defense. As of the latest update, this is **not** just a raw
+              per-game total — see "Why defense_allowed_z isn't a raw total" below.
             - **mismatch_score = player_form_z + defense_allowed_z**
 
             A high score means a player who's been performing well is about to
@@ -132,6 +133,46 @@ if mismatches is not None and not mismatches.empty:
             position — target share for WR/TE, rush attempts per game for RB,
             pass attempts per game for QB. It's there to help you judge whether
             a mismatch is backed by real opportunity or just a couple of big plays.
+
+            ---
+
+            **Why defense_allowed_z isn't a raw total**
+
+            A defense's raw yards/TDs-allowed total mixes together two different
+            things: how many plays it actually faced (which depends on the pace
+            and pass/run tendencies of the offenses it happened to play) and how
+            well it defended each one. A defense that faces a lot of pass attempts
+            will rack up passing yards allowed even if it's efficient on a
+            per-play basis — and vice versa, a defense that's only faced a few
+            attempts can hide a real weakness behind a low total.
+
+            To correct for this, `defense_allowed_z` is built from **rate stats**
+            instead — the same recency weighting is applied, but to per-attempt
+            or per-target efficiency rather than raw totals:
+
+            | Stat | What actually drives the weakness score |
+            |---|---|
+            | Passing yards | Yards per attempt allowed, completion % allowed, completions per game allowed |
+            | Passing TDs | TD rate per pass attempt allowed |
+            | Rushing yards | Yards per carry allowed, rush attempts per game allowed |
+            | Rushing TDs | TD rate per carry allowed |
+            | Receiving yards | Yards per target allowed, catch rate allowed, targets per game allowed |
+            | Receiving TDs | TD rate per target allowed |
+            | Receptions | Catch rate allowed, targets per game allowed |
+
+            When a stat has more than one rate listed, each is z-scored
+            separately and then averaged into one composite — so, for example,
+            a defense isn't rated as pass-weak *just* because it faces a lot of
+            attempts, but it also isn't let off the hook for being genuinely
+            bad on a per-attempt basis. The raw per-game total (shown in the
+            `defense_allowed` column) is still displayed for reference — it's
+            just no longer what drives the score.
+
+            **A caution on small samples**: rate stats can swing hard early in a
+            season when a defense has only faced a handful of attempts or
+            carries — one long touchdown run can make a TD rate look extreme.
+            Treat scores built on just 1-2 games of opponent data with some
+            skepticism until more weeks are in.
             """
         )
 else:
